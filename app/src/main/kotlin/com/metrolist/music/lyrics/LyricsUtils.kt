@@ -869,64 +869,147 @@ object LyricsUtils {
 
     suspend fun romanizeJapanese(text: String): String = withContext(Dispatchers.Default) {
         val tokens = kuromojiTokenizer.tokenize(text)
-        val romanizedTokens = tokens.mapIndexed { index, token ->
-            val currentReading = if (token.reading.isNullOrEmpty() || token.reading == "*") {
+    
+        tokens.joinToString(" ") { token ->
+            val reading = if (token.reading.isNullOrEmpty() || token.reading == "*") {
                 token.surface
             } else {
                 token.reading
             }
-            val nextTokenReading = if (index + 1 < tokens.size) {
-                tokens[index + 1].reading?.takeIf { it.isNotEmpty() && it != "*" } ?: tokens[index + 1].surface
-            } else {
-                null
-            }
-            katakanaToRomaji(currentReading, nextTokenReading)
-        }
-        romanizedTokens.joinToString(" ")
+    
+            katakanaToRomaji(reading)
+        }.replace(Regex("""\s+([。、，．！？!?.,])"""), "$1")
     }
 
     fun katakanaToRomaji(katakana: String?, nextKatakana: String? = null): String {
-        if (katakana.isNullOrEmpty()) return ""
+    if (katakana.isNullOrEmpty()) return ""
 
-        val romajiBuilder = StringBuilder(katakana.length)
-        var i = 0
-        val n = katakana.length
-        while (i < n) {
-            var consumed = false
-            if (i + 1 < n) {
-                val twoCharCandidate = katakana.substring(i, i + 2)
-                val mappedTwoChar = KANA_ROMAJI_MAP[twoCharCandidate]
-                if (mappedTwoChar != null) {
-                    romajiBuilder.append(mappedTwoChar)
-                    i += 2
-                    consumed = true
-                }
+    val result = StringBuilder()
+    var i = 0
+
+    while (i < katakana.length) {
+        val current = katakana[i]
+
+        // Small tsu: ッ
+        if (current == 'ッ') {
+            val nextRomaji = when {
+                i + 1 < katakana.length ->
+                    katakanaToRomaji(katakana.substring(i + 1, i + 2))
+
+                !nextKatakana.isNullOrEmpty() ->
+                    katakanaToRomaji(nextKatakana)
+
+                else -> ""
             }
 
-            if (!consumed && katakana[i] == 'ッ') {
-                val nextCharToDouble = nextKatakana?.getOrNull(0)
-                if (nextCharToDouble != null) {
-                    val nextCharRomaji = KANA_ROMAJI_MAP[nextCharToDouble.toString()]?.getOrNull(0)?.toString()
-                        ?: nextCharToDouble.toString()
-                    romajiBuilder.append(nextCharRomaji.lowercase().trim())
-                }
-                i += 1
-                consumed = true
+            val consonant = nextRomaji.firstOrNull {
+                it in "bcdfghjklmpqrstvwxyz"
             }
 
-            if (!consumed) {
-                val oneCharCandidate = katakana[i].toString()
-                val mappedOneChar = KANA_ROMAJI_MAP[oneCharCandidate]
-                if (mappedOneChar != null) {
-                    romajiBuilder.append(mappedOneChar)
-                } else {
-                    romajiBuilder.append(oneCharCandidate)
-                }
-                i += 1
+            if (consonant != null) {
+                result.append(consonant)
+            }
+
+            i++
+            continue
+        }
+
+        // Long vowel mark: ー
+        if (current == 'ー') {
+            val lastVowel = result.lastOrNull { it in "aeiou" }
+
+            if (lastVowel != null) {
+                result.append(
+                    when (lastVowel) {
+                        'a' -> 'ā'
+                        'i' -> 'ī'
+                        'u' -> 'ū'
+                        'e' -> 'ē'
+                        'o' -> 'ō'
+                        else -> lastVowel
+                    }
+                )
+            }
+
+            i++
+            continue
+        }
+
+        // Long vowel combinations:
+        // アア → ā
+        // イイ → ī
+        // ウウ → ū
+        // エエ → ē
+        // オオ → ō
+        // オウ → ō
+        if (i + 1 < katakana.length) {
+            val pair = katakana.substring(i, i + 2)
+
+            val longVowel = when (pair) {
+                "アア" -> "ā"
+                "イイ" -> "ī"
+                "ウウ" -> "ū"
+                "エエ" -> "ē"
+                "オオ", "オウ" -> "ō"
+                else -> null
+            }
+
+            if (longVowel != null) {
+                result.append(longVowel)
+                i += 2
+                continue
             }
         }
-        return romajiBuilder.toString().lowercase()
+
+        // Digraphs: キャ, シュ, チョ, etc.
+        if (i + 1 < katakana.length) {
+            val pair = katakana.substring(i, i + 2)
+            val mappedPair = KANA_ROMAJI_MAP[pair]
+
+            if (mappedPair != null) {
+                result.append(mappedPair)
+                i += 2
+                continue
+            }
+        }
+
+        // ン before a vowel or y → n'
+        if (current == 'ン') {
+            val next = katakana.getOrNull(i + 1)
+
+            if (next != null) {
+                val nextRomaji = katakanaToRomaji(next.toString())
+
+                if (nextRomaji.firstOrNull() in listOf(
+                        'a', 'i', 'u', 'e', 'o', 'y'
+                    )
+                ) {
+                    result.append("n'")
+                } else {
+                    result.append('n')
+                }
+            } else {
+                result.append('n')
+            }
+
+            i++
+            continue
+        }
+
+        // Normal kana
+        val mapped = KANA_ROMAJI_MAP[current.toString()]
+
+        if (mapped != null) {
+            result.append(mapped)
+        } else {
+            result.append(current)
+        }
+
+        i++
     }
+
+    return result.toString().lowercase()
+}
 
     suspend fun romanizeKorean(text: String): String = withContext(Dispatchers.Default) {
         val romajaBuilder = StringBuilder()
